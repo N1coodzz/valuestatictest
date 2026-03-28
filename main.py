@@ -18,12 +18,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import (
-    FSInputFile,
-    KeyboardButton,
-    Message,
-    ReplyKeyboardMarkup,
-)
+from aiogram.types import FSInputFile, KeyboardButton, Message, ReplyKeyboardMarkup
 
 # =========================
 # CONFIG
@@ -31,8 +26,10 @@ from aiogram.types import (
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 TIMEZONE = ZoneInfo("Europe/Moscow")
+
 DB_PATH = "bot.db"
 LOG_PATH = "bot.log"
+
 REMINDER_MINUTES = 10
 DOUBLE_TAP_SECONDS = 1.2
 
@@ -49,8 +46,8 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
     handlers=[
         logging.FileHandler(LOG_PATH, encoding="utf-8"),
-        logging.StreamHandler()
-    ]
+        logging.StreamHandler(),
+    ],
 )
 logger = logging.getLogger("value-bot")
 
@@ -61,8 +58,9 @@ bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 scheduler = AsyncIOScheduler(timezone="Europe/Moscow")
 
-# антидубль на случай двойных нажатий / повторной отправки одной и той же кнопки
+# антидубль на быстрые нажатия
 ACTION_GUARD = {}
+
 
 # =========================
 # STATES
@@ -72,59 +70,8 @@ class ShiftState(StatesGroup):
     waiting_bet_amount = State()
     waiting_end_shift_confirm = State()
     waiting_delete_last_confirm = State()
-
-
-# =========================
-# UI
-# =========================
-def main_kb():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="🚀 Начать смену"), KeyboardButton(text="📊 Текущая смена")],
-            [KeyboardButton(text="🎯 Добавить ставку"), KeyboardButton(text="🧾 Последняя ставка")],
-            [KeyboardButton(text="📚 Последние 10 ставок"), KeyboardButton(text="📈 Статистика по смене")],
-            [KeyboardButton(text="🏷 Отметить результат"), KeyboardButton(text="📤 Export CSV")],
-            [KeyboardButton(text="🗑 Delete last"), KeyboardButton(text="🏁 Закончить смену")],
-            [KeyboardButton(text="❌ Отмена")],
-        ],
-        resize_keyboard=True,
-        is_persistent=True,
-    )
-
-
-def amount_retry_kb():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="🔁 Повторить ввод суммы")],
-            [KeyboardButton(text="❌ Отмена")],
-        ],
-        resize_keyboard=True,
-        is_persistent=True,
-    )
-
-
-def yes_no_kb():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="✅ Подтвердить"), KeyboardButton(text="❌ Отмена")],
-        ],
-        resize_keyboard=True,
-        is_persistent=True,
-    )
-
-
-def result_kb():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="🕒 В ожидании")],
-            [KeyboardButton(text="✅ Выигрыш"), KeyboardButton(text="❌ Проигрыш")],
-            [KeyboardButton(text="🟡 Половина выигрыша"), KeyboardButton(text="🟠 Половина проигрыша")],
-            [KeyboardButton(text="↩️ Возврат")],
-            [KeyboardButton(text="❌ Отмена")],
-        ],
-        resize_keyboard=True,
-        is_persistent=True,
-    )
+    waiting_result_bet_number = State()
+    waiting_result_status = State()
 
 
 # =========================
@@ -136,21 +83,6 @@ def now_dt() -> datetime:
 
 def now_str() -> str:
     return now_dt().strftime("%Y-%m-%d %H:%M:%S")
-
-
-def log_info(text: str):
-    logger.info(text)
-    save_log("INFO", text)
-
-
-def log_warning(text: str):
-    logger.warning(text)
-    save_log("WARNING", text)
-
-
-def log_error(text: str):
-    logger.error(text)
-    save_log("ERROR", text)
 
 
 def as_float(text: str) -> float:
@@ -200,7 +132,7 @@ def parse_match_start(match_date: str, match_time: str) -> datetime:
         day=int(day),
         hour=int(hour),
         minute=int(minute),
-        tzinfo=TIMEZONE
+        tzinfo=TIMEZONE,
     )
 
     if dt < now - timedelta(days=30):
@@ -210,10 +142,6 @@ def parse_match_start(match_date: str, match_time: str) -> datetime:
 
 
 def calc_settlement(stake: float, odds: float, result_status: str):
-    """
-    payout = общая выплата
-    profit = чистая прибыль
-    """
     if result_status == "pending":
         return None, None
 
@@ -241,9 +169,6 @@ def calc_settlement(stake: float, odds: float, result_status: str):
     return None, None
 
 
-# =========================
-# DB
-# =========================
 def save_log(level: str, message: str):
     db = connect()
     db.execute("""
@@ -262,6 +187,24 @@ def save_log(level: str, message: str):
     db.close()
 
 
+def log_info(text: str):
+    logger.info(text)
+    save_log("INFO", text)
+
+
+def log_warning(text: str):
+    logger.warning(text)
+    save_log("WARNING", text)
+
+
+def log_error(text: str):
+    logger.error(text)
+    save_log("ERROR", text)
+
+
+# =========================
+# DB
+# =========================
 def add_column_if_not_exists(table_name: str, column_name: str, ddl: str):
     db = connect()
     cols = db.execute(f"PRAGMA table_info({table_name})").fetchall()
@@ -325,7 +268,6 @@ def init_db():
     db.commit()
     db.close()
 
-    # миграции на случай старой базы
     add_column_if_not_exists("bets", "match_start_at", "ALTER TABLE bets ADD COLUMN match_start_at TEXT")
     add_column_if_not_exists("bets", "reminder_sent", "ALTER TABLE bets ADD COLUMN reminder_sent INTEGER DEFAULT 0")
     add_column_if_not_exists("bets", "result_status", "ALTER TABLE bets ADD COLUMN result_status TEXT DEFAULT 'pending'")
@@ -373,7 +315,6 @@ def end_shift_db(shift_id: int, ended_at: str):
 
 def add_bet_db(shift_id: int, user_id: int, created_at: str, parsed: dict, stake: float):
     db = connect()
-
     db.execute("""
         INSERT INTO bets(
             shift_id, user_id, created_at,
@@ -409,10 +350,10 @@ def add_bet_db(shift_id: int, user_id: int, created_at: str, parsed: dict, stake
 
     db.commit()
     db.close()
-    log_info(f"Bet added | shift_id={shift_id} | user={user_id} | stake={stake} | hash={parsed['hash']}")
+    log_info(f"Bet added | shift_id={shift_id} | user={user_id} | stake={stake}")
 
 
-def get_last_bets(user_id: int, limit: int = 10):
+def get_last_bets(user_id: int, limit: int = 20):
     db = connect()
     rows = db.execute("""
         SELECT id, sport, match_name, market, odds, stake, bookmaker, created_at, result_status
@@ -428,6 +369,18 @@ def get_last_bets(user_id: int, limit: int = 10):
 def get_last_bet(user_id: int):
     rows = get_last_bets(user_id, 1)
     return rows[0] if rows else None
+
+
+def get_bet_by_id(bet_id: int):
+    db = connect()
+    row = db.execute("""
+        SELECT id, sport, tournament, match_name, match_date, match_time, market, odds, ev,
+               bookmaker, stake, created_at, result_status, payout, profit
+        FROM bets
+        WHERE id = ?
+    """, (bet_id,)).fetchone()
+    db.close()
+    return row
 
 
 def count_bets_in_shift(shift_id: int) -> int:
@@ -459,21 +412,19 @@ def get_shift_stats(shift_id: int):
     return row
 
 
-def update_last_bet_result(user_id: int, result_status: str):
+def update_bet_result(bet_id: int, result_status: str):
     db = connect()
     row = db.execute("""
-        SELECT id, stake, odds
+        SELECT stake, odds
         FROM bets
-        WHERE user_id = ?
-        ORDER BY id DESC
-        LIMIT 1
-    """, (user_id,)).fetchone()
+        WHERE id = ?
+    """, (bet_id,)).fetchone()
 
     if not row:
         db.close()
-        return False, "Нет ставок для обновления."
+        return False
 
-    bet_id, stake, odds = row
+    stake, odds = row
     payout, profit = calc_settlement(stake, odds, result_status)
 
     db.execute("""
@@ -485,31 +436,29 @@ def update_last_bet_result(user_id: int, result_status: str):
     db.close()
 
     log_info(f"Bet result updated | bet_id={bet_id} | status={result_status}")
-    return True, bet_id
+    return True
 
 
-def delete_last_bet(user_id: int):
+def delete_bet_by_id(bet_id: int):
     db = connect()
     row = db.execute("""
-        SELECT id, shift_id, stake
+        SELECT shift_id, stake
         FROM bets
-        WHERE user_id = ?
-        ORDER BY id DESC
-        LIMIT 1
-    """, (user_id,)).fetchone()
+        WHERE id = ?
+    """, (bet_id,)).fetchone()
 
     if not row:
         db.close()
-        return False, "Нет ставок для удаления."
+        return False, None
 
-    bet_id, shift_id, stake = row
+    shift_id, stake = row
 
     db.execute("DELETE FROM bets WHERE id = ?", (bet_id,))
     db.execute("UPDATE shifts SET spent = spent - ? WHERE id = ?", (stake, shift_id))
     db.commit()
     db.close()
 
-    log_warning(f"Last bet deleted | bet_id={bet_id} | shift_id={shift_id} | stake={stake}")
+    log_warning(f"Bet deleted | bet_id={bet_id} | shift_id={shift_id} | stake={stake}")
     return True, stake
 
 
@@ -528,7 +477,8 @@ def export_bets_to_csv(user_id: int) -> str | None:
     if not rows:
         return None
 
-    export_path = Path("bets_export.csv")
+    filename = f"bets_export_{now_dt().strftime('%Y%m%d_%H%M%S')}.csv"
+    export_path = Path(filename)
     with export_path.open("w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f, delimiter=";")
         writer.writerow([
@@ -593,13 +543,29 @@ def mark_reminder_sent(bet_id: int):
 # =========================
 def parse_bet(text: str):
     """
-    Берём только первую ставку из сообщения.
+    Берём только первую корректную ставку из сообщения,
+    даже если перед ней есть строки вроде:
+    '‼️ Внимание! Ставка только для PRO'
     """
-    blocks = [b.strip() for b in re.split(r"(?=⚽️🏒🎾)", text) if b.strip()]
-    if not blocks:
+    pattern = re.compile(r"(⚽️🏒🎾.*?)(?=\n\s*⚽️🏒🎾|\Z)", re.S)
+    matches = pattern.findall(text)
+
+    if not matches:
         return None
 
-    block = blocks[0]
+    block = None
+
+    for candidate in matches:
+        sport_line = re.search(r"⚽️🏒🎾\s*(.+?)\n", candidate, re.S)
+        event_line = re.search(r"🚩\s*(.+?),\s*(\d{1,2}:\d{2})\s+(\d{2}/\d{2})", candidate)
+        market_line = re.search(r"❗️\s*(.+?)\s*коэф\.?\s*([\d.,]+)❗️", candidate, re.S)
+
+        if sport_line and event_line and market_line:
+            block = candidate.strip()
+            break
+
+    if not block:
+        return None
 
     sport_line = re.search(r"⚽️🏒🎾\s*(.+?)\n", block, re.S)
     event_line = re.search(r"🚩\s*(.+?),\s*(\d{1,2}:\d{2})\s+(\d{2}/\d{2})", block)
@@ -639,7 +605,7 @@ def parse_bet(text: str):
 
 
 # =========================
-# TEXT MAPPINGS
+# LABELS
 # =========================
 RESULT_MAP = {
     "🕒 В ожидании": "pending",
@@ -661,6 +627,96 @@ RESULT_LABELS = {
 
 
 # =========================
+# KEYBOARDS
+# =========================
+def main_menu_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🎯 Смена"), KeyboardButton(text="📚 Ставки")],
+            [KeyboardButton(text="📊 Статистика")],
+            [KeyboardButton(text="❌ Отмена")],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
+def shift_menu_kb(active_shift_exists: bool):
+    keyboard = []
+    if not active_shift_exists:
+        keyboard.append([KeyboardButton(text="🚀 Начать смену")])
+    else:
+        keyboard.append([KeyboardButton(text="📍 Текущая смена"), KeyboardButton(text="🏁 Завершить смену")])
+
+    keyboard.append([KeyboardButton(text="⬅️ Назад")])
+
+    return ReplyKeyboardMarkup(
+        keyboard=keyboard,
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
+def bets_menu_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="➕ Добавить ставку"), KeyboardButton(text="🧾 Последняя ставка")],
+            [KeyboardButton(text="📚 Последние 20 ставок")],
+            [KeyboardButton(text="🏷 Отметить результат"), KeyboardButton(text="🗑 Delete last")],
+            [KeyboardButton(text="⬅️ Назад")],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
+def stats_menu_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📈 Статистика по смене"), KeyboardButton(text="📤 Export CSV")],
+            [KeyboardButton(text="⬅️ Назад")],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
+def amount_retry_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🔁 Повторить ввод суммы")],
+            [KeyboardButton(text="❌ Отмена")],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
+def yes_no_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="✅ Подтвердить"), KeyboardButton(text="❌ Отмена")],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
+def result_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🕒 В ожидании")],
+            [KeyboardButton(text="✅ Выигрыш"), KeyboardButton(text="❌ Проигрыш")],
+            [KeyboardButton(text="🟡 Половина выигрыша"), KeyboardButton(text="🟠 Половина проигрыша")],
+            [KeyboardButton(text="↩️ Возврат")],
+            [KeyboardButton(text="❌ Отмена")],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
+# =========================
 # COMMANDS
 # =========================
 @dp.message(Command("start"))
@@ -678,8 +734,8 @@ async def cmd_start(message: Message, state: FSMContext):
         "• сохранять ставки\n"
         "• напоминать о матчах\n"
         "• считать статистику\n\n"
-        "Выбери действие ниже 👇",
-        reply_markup=main_kb()
+        "Выбери раздел 👇",
+        reply_markup=main_menu_kb()
     )
 
 
@@ -690,39 +746,73 @@ async def cmd_export_csv(message: Message):
 
     path = export_bets_to_csv(message.from_user.id)
     if not path:
-        await message.answer("📭 Пока нет данных для экспорта.", reply_markup=main_kb())
+        await message.answer("📭 Пока нет данных для экспорта.", reply_markup=stats_menu_kb())
         return
 
-    await message.answer_document(FSInputFile(path), caption="📤 Экспорт CSV готов.", reply_markup=main_kb())
+    await message.answer_document(FSInputFile(path), caption="📤 Экспорт CSV готов.", reply_markup=stats_menu_kb())
 
 
-@dp.message(Command("delete_last"))
-async def cmd_delete_last(message: Message, state: FSMContext):
-    if message.from_user.id != OWNER_ID:
-        return
+# =========================
+# ROOT NAVIGATION
+# =========================
+@dp.message(F.text == "⬅️ Назад")
+async def back_to_main(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("🏠 Главное меню", reply_markup=main_menu_kb())
 
-    last_bet = get_last_bet(message.from_user.id)
-    if not last_bet:
-        await message.answer("📭 Нет ставок для удаления.", reply_markup=main_kb())
-        return
 
-    await state.set_state(ShiftState.waiting_delete_last_confirm)
+@dp.message(F.text == "❌ Отмена")
+async def cancel_action(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("❌ Действие отменено.", reply_markup=main_menu_kb())
+
+
+@dp.message(F.text == "🎯 Смена")
+async def open_shift_menu(message: Message, state: FSMContext):
+    await state.clear()
+    active = get_active_shift(message.from_user.id)
+    if active:
+        _, budget, spent, started_at = active
+        remain = round(budget - spent, 2)
+        await message.answer(
+            f"🟢 <b>Смена активна</b>\n\n"
+            f"🕒 Начало: <b>{started_at} МСК</b>\n"
+            f"💰 Бюджет: <b>{budget}</b>\n"
+            f"💸 Поставлено: <b>{spent}</b>\n"
+            f"🟢 Остаток: <b>{remain}</b>",
+            reply_markup=shift_menu_kb(True)
+        )
+    else:
+        await message.answer(
+            "🎯 <b>Раздел «Смена»</b>\n\n"
+            "Здесь ты можешь начать или завершить смену.",
+            reply_markup=shift_menu_kb(False)
+        )
+
+
+@dp.message(F.text == "📚 Ставки")
+async def open_bets_menu(message: Message, state: FSMContext):
+    await state.clear()
     await message.answer(
-        "🗑 <b>Удалить последнюю ставку?</b>\n\n"
-        "Нажми <b>Подтвердить</b>, если уверен.",
-        reply_markup=yes_no_kb()
+        "📚 <b>Раздел «Ставки»</b>\n\n"
+        "Здесь можно добавлять ставки, смотреть историю и отмечать результаты.",
+        reply_markup=bets_menu_kb()
+    )
+
+
+@dp.message(F.text == "📊 Статистика")
+async def open_stats_menu(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "📊 <b>Раздел «Статистика»</b>\n\n"
+        "Здесь можно смотреть статистику по смене и выгружать CSV.",
+        reply_markup=stats_menu_kb()
     )
 
 
 # =========================
-# NAVIGATION HANDLERS
+# SHIFT FLOW
 # =========================
-@dp.message(F.text == "❌ Отмена")
-async def cancel_action(message: Message, state: FSMContext):
-    await state.clear()
-    await message.answer("❌ Действие отменено.", reply_markup=main_kb())
-
-
 @dp.message(F.text == "🚀 Начать смену")
 async def start_shift_button(message: Message, state: FSMContext):
     if message.from_user.id != OWNER_ID:
@@ -743,7 +833,7 @@ async def start_shift_button(message: Message, state: FSMContext):
             f"💸 Поставлено: <b>{spent}</b>\n"
             f"🎯 Ставок в смене: <b>{bets_count}</b>\n"
             f"🟢 Остаток: <b>{remain}</b>",
-            reply_markup=main_kb()
+            reply_markup=shift_menu_kb(True)
         )
         return
 
@@ -751,11 +841,6 @@ async def start_shift_button(message: Message, state: FSMContext):
     await message.answer(
         "💰 <b>Введи бюджет смены</b>\n\n"
         "Пример: <code>10000</code>",
-        reply_markup=yes_no_kb() if False else main_kb()
-    )
-    await message.answer(
-        "⌨️ Напиши сумму бюджета одним сообщением.\n"
-        "Например: <code>10000</code>",
         reply_markup=ReplyKeyboardMarkup(
             keyboard=[[KeyboardButton(text="❌ Отмена")]],
             resize_keyboard=True,
@@ -786,13 +871,14 @@ async def budget_input(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
         f"✅ <b>Смена начата</b>\n\n"
+        f"🟢 Статус: <b>Смена активна</b>\n"
         f"💰 Бюджет: <b>{budget}</b>\n"
         f"🕒 Время старта: <b>{now_str()} МСК</b>",
-        reply_markup=main_kb()
+        reply_markup=shift_menu_kb(True)
     )
 
 
-@dp.message(F.text == "📊 Текущая смена")
+@dp.message(F.text == "📍 Текущая смена")
 async def current_shift_handler(message: Message):
     if message.from_user.id != OWNER_ID:
         return
@@ -802,7 +888,7 @@ async def current_shift_handler(message: Message):
 
     active = get_active_shift(message.from_user.id)
     if not active:
-        await message.answer("📭 Активной смены нет.", reply_markup=main_kb())
+        await message.answer("📭 Активной смены нет.", reply_markup=shift_menu_kb(False))
         return
 
     shift_id, budget, spent, started_at = active
@@ -816,10 +902,325 @@ async def current_shift_handler(message: Message):
         f"💸 Поставлено: <b>{spent}</b>\n"
         f"🎯 Ставок в смене: <b>{bets_count}</b>\n"
         f"🟢 Остаток: <b>{remain}</b>",
-        reply_markup=main_kb()
+        reply_markup=shift_menu_kb(True)
     )
 
 
+@dp.message(F.text == "🏁 Завершить смену")
+async def end_shift_handler(message: Message, state: FSMContext):
+    if message.from_user.id != OWNER_ID:
+        return
+
+    if has_recent_action(message.from_user.id, "end_shift"):
+        return
+
+    active = get_active_shift(message.from_user.id)
+    if not active:
+        await message.answer("📭 Активной смены нет.", reply_markup=shift_menu_kb(False))
+        return
+
+    shift_id, budget, spent, started_at = active
+    remain = round(budget - spent, 2)
+    bets_count = count_bets_in_shift(shift_id)
+
+    await state.set_state(ShiftState.waiting_end_shift_confirm)
+    await message.answer(
+        f"🏁 <b>Подтвердить завершение смены?</b>\n\n"
+        f"💰 Бюджет: <b>{budget}</b>\n"
+        f"💸 Поставлено: <b>{spent}</b>\n"
+        f"🎯 Ставок: <b>{bets_count}</b>\n"
+        f"🟢 Остаток: <b>{remain}</b>",
+        reply_markup=yes_no_kb()
+    )
+
+
+@dp.message(ShiftState.waiting_end_shift_confirm, F.text == "✅ Подтвердить")
+async def confirm_end_shift(message: Message, state: FSMContext):
+    active = get_active_shift(message.from_user.id)
+    if not active:
+        await state.clear()
+        await message.answer("📭 Активной смены уже нет.", reply_markup=shift_menu_kb(False))
+        return
+
+    shift_id, budget, spent, started_at = active
+    remain = round(budget - spent, 2)
+    bets_count = count_bets_in_shift(shift_id)
+    end_shift_db(shift_id, now_str())
+    await state.clear()
+
+    await message.answer(
+        f"🏁 <b>Смена завершена</b>\n\n"
+        f"🕒 Начало: <b>{started_at} МСК</b>\n"
+        f"🕒 Конец: <b>{now_str()} МСК</b>\n"
+        f"💰 Бюджет: <b>{budget}</b>\n"
+        f"💸 Поставлено: <b>{spent}</b>\n"
+        f"🎯 Ставок: <b>{bets_count}</b>\n"
+        f"🟢 Остаток: <b>{remain}</b>",
+        reply_markup=shift_menu_kb(False)
+    )
+
+
+# =========================
+# BETS MENU
+# =========================
+@dp.message(F.text == "➕ Добавить ставку")
+async def add_bet_hint(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+
+    active = get_active_shift(message.from_user.id)
+    if not active:
+        await message.answer(
+            "⚠️ Сначала начни смену.",
+            reply_markup=shift_menu_kb(False)
+        )
+        return
+
+    await message.answer(
+        "📥 <b>Перешли мне сообщение со ставкой</b>\n\n"
+        "Важно:\n"
+        "• только пересланное сообщение\n"
+        "• бот берёт первую корректную ставку из сообщения\n"
+        "• если формат не распознается, я так и напишу",
+        reply_markup=bets_menu_kb()
+    )
+
+
+@dp.message(F.text == "🧾 Последняя ставка")
+async def last_bet_handler(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+
+    if has_recent_action(message.from_user.id, "last_bet"):
+        return
+
+    row = get_last_bet(message.from_user.id)
+    if not row:
+        await message.answer("📭 Пока нет ставок.", reply_markup=bets_menu_kb())
+        return
+
+    bet_id, sport, match_name, market, odds, stake, bookmaker, created_at, result_status = row
+
+    await message.answer(
+        f"🧾 <b>Последняя ставка</b>\n\n"
+        f"🏅 {sport}\n"
+        f"🏟 <b>{match_name}</b>\n"
+        f"📌 {market}\n"
+        f"📈 КФ: <b>{odds}</b>\n"
+        f"💸 Сумма: <b>{stake}</b>\n"
+        f"🏦 БК: <b>{bookmaker}</b>\n"
+        f"🏷 Статус: <b>{RESULT_LABELS.get(result_status, result_status)}</b>\n"
+        f"🕒 Добавлена: <b>{created_at} МСК</b>",
+        reply_markup=bets_menu_kb()
+    )
+
+
+@dp.message(F.text == "📚 Последние 20 ставок")
+async def last_20_handler(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+
+    if has_recent_action(message.from_user.id, "last_20"):
+        return
+
+    rows = get_last_bets(message.from_user.id, 20)
+    if not rows:
+        await message.answer("📭 Пока нет ставок.", reply_markup=bets_menu_kb())
+        return
+
+    lines = []
+    for i, row in enumerate(rows, start=1):
+        bet_id, sport, match_name, market, odds, stake, bookmaker, created_at, result_status = row
+        lines.append(
+            f"{i}. <b>{sport}</b> | {match_name}\n"
+            f"📌 {market}\n"
+            f"📈 КФ: <b>{odds}</b> | 💸 {stake} | 🏦 {bookmaker}\n"
+            f"🏷 <b>{RESULT_LABELS.get(result_status, result_status)}</b>"
+        )
+
+    await message.answer("\n\n".join(lines), reply_markup=bets_menu_kb())
+
+
+@dp.message(F.text == "🗑 Delete last")
+async def delete_last_handler(message: Message, state: FSMContext):
+    if message.from_user.id != OWNER_ID:
+        return
+
+    row = get_last_bet(message.from_user.id)
+    if not row:
+        await message.answer("📭 Нет ставок для удаления.", reply_markup=bets_menu_kb())
+        return
+
+    bet_id, sport, match_name, market, odds, stake, bookmaker, created_at, result_status = row
+    await state.update_data(delete_bet_id=bet_id)
+    await state.set_state(ShiftState.waiting_delete_last_confirm)
+
+    await message.answer(
+        f"🗑 <b>Удалить последнюю ставку?</b>\n\n"
+        f"🏟 Матч: <b>{match_name}</b>\n"
+        f"📌 Маркет: {market}\n"
+        f"💸 Сумма: <b>{stake}</b>\n"
+        f"📈 КФ: <b>{odds}</b>\n"
+        f"🏦 БК: <b>{bookmaker}</b>\n"
+        f"🏷 Статус: <b>{RESULT_LABELS.get(result_status, result_status)}</b>",
+        reply_markup=yes_no_kb()
+    )
+
+
+@dp.message(ShiftState.waiting_delete_last_confirm, F.text == "✅ Подтвердить")
+async def confirm_delete_last(message: Message, state: FSMContext):
+    data = await state.get_data()
+    bet_id = data.get("delete_bet_id")
+
+    if not bet_id:
+        await state.clear()
+        await message.answer("⚠️ Не нашёл ставку для удаления.", reply_markup=bets_menu_kb())
+        return
+
+    ok, stake = delete_bet_by_id(bet_id)
+    await state.clear()
+
+    if not ok:
+        await message.answer("⚠️ Не удалось удалить ставку.", reply_markup=bets_menu_kb())
+        return
+
+    await message.answer(
+        f"🗑 <b>Ставка удалена</b>\n\n"
+        f"💸 Возвращено в расход смены: <b>{stake}</b>",
+        reply_markup=bets_menu_kb()
+    )
+
+
+# =========================
+# RESULT FLOW
+# =========================
+@dp.message(F.text == "🏷 Отметить результат")
+async def mark_result_start(message: Message, state: FSMContext):
+    if message.from_user.id != OWNER_ID:
+        return
+
+    rows = get_last_bets(message.from_user.id, 20)
+    if not rows:
+        await message.answer("📭 Нет ставок для отметки результата.", reply_markup=bets_menu_kb())
+        return
+
+    lines = ["🏷 <b>Выбери ставку по номеру</b>\n"]
+    mapping = {}
+
+    for idx, row in enumerate(rows, start=1):
+        bet_id, sport, match_name, market, odds, stake, bookmaker, created_at, result_status = row
+        mapping[str(idx)] = bet_id
+        lines.append(
+            f"{idx}. <b>{match_name}</b>\n"
+            f"📌 {market}\n"
+            f"💸 {stake} | 📈 {odds}\n"
+            f"🏷 {RESULT_LABELS.get(result_status, result_status)}\n"
+        )
+
+    await state.update_data(result_choices=mapping)
+    await state.set_state(ShiftState.waiting_result_bet_number)
+
+    await message.answer(
+        "\n".join(lines) + "\nНапиши номер ставки сообщением.",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="❌ Отмена")]],
+            resize_keyboard=True,
+            is_persistent=True,
+        )
+    )
+
+
+@dp.message(ShiftState.waiting_result_bet_number)
+async def result_bet_number_input(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+
+    data = await state.get_data()
+    mapping = data.get("result_choices", {})
+
+    if text not in mapping:
+        await message.answer(
+            "⚠️ Номер не найден.\n"
+            "Напиши номер ставки из списка.",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="❌ Отмена")]],
+                resize_keyboard=True,
+                is_persistent=True,
+            )
+        )
+        return
+
+    bet_id = mapping[text]
+    bet = get_bet_by_id(bet_id)
+    if not bet:
+        await state.clear()
+        await message.answer("⚠️ Не удалось найти ставку.", reply_markup=bets_menu_kb())
+        return
+
+    (
+        _id, sport, tournament, match_name, match_date, match_time, market,
+        odds, ev, bookmaker, stake, created_at, result_status, payout, profit
+    ) = bet
+
+    await state.update_data(selected_bet_id=bet_id)
+    await state.set_state(ShiftState.waiting_result_status)
+
+    await message.answer(
+        f"🎯 <b>Выбрана ставка</b>\n\n"
+        f"🏟 <b>{match_name}</b>\n"
+        f"📌 {market}\n"
+        f"💸 Сумма: <b>{stake}</b>\n"
+        f"📈 КФ: <b>{odds}</b>\n"
+        f"🏦 БК: <b>{bookmaker}</b>\n"
+        f"🏷 Текущий статус: <b>{RESULT_LABELS.get(result_status, result_status)}</b>\n\n"
+        f"Теперь выбери новый результат:",
+        reply_markup=result_kb()
+    )
+
+
+@dp.message(ShiftState.waiting_result_status, F.text.in_(list(RESULT_MAP.keys())))
+async def set_result_handler(message: Message, state: FSMContext):
+    result_status = RESULT_MAP[message.text]
+    data = await state.get_data()
+    bet_id = data.get("selected_bet_id")
+
+    if not bet_id:
+        await state.clear()
+        await message.answer("⚠️ Не выбрана ставка.", reply_markup=bets_menu_kb())
+        return
+
+    ok = update_bet_result(bet_id, result_status)
+    await state.clear()
+
+    if not ok:
+        await message.answer("⚠️ Не удалось обновить результат.", reply_markup=bets_menu_kb())
+        return
+
+    bet = get_bet_by_id(bet_id)
+    if bet:
+        (
+            _id, sport, tournament, match_name, match_date, match_time, market,
+            odds, ev, bookmaker, stake, created_at, result_status_db, payout, profit
+        ) = bet
+
+        extra = ""
+        if payout is not None:
+            extra += f"\n💰 Выплата: <b>{payout}</b>"
+        if profit is not None:
+            extra += f"\n📊 Прибыль: <b>{profit}</b>"
+
+        await message.answer(
+            f"✅ <b>Результат обновлён</b>\n\n"
+            f"🏟 <b>{match_name}</b>\n"
+            f"🏷 Новый статус: <b>{RESULT_LABELS.get(result_status_db, result_status_db)}</b>{extra}",
+            reply_markup=bets_menu_kb()
+        )
+    else:
+        await message.answer("✅ Результат обновлён.", reply_markup=bets_menu_kb())
+
+
+# =========================
+# STATS MENU
+# =========================
 @dp.message(F.text == "📈 Статистика по смене")
 async def shift_stats_handler(message: Message):
     if message.from_user.id != OWNER_ID:
@@ -830,7 +1231,7 @@ async def shift_stats_handler(message: Message):
 
     active = get_active_shift(message.from_user.id)
     if not active:
-        await message.answer("📭 Активной смены нет.", reply_markup=main_kb())
+        await message.answer("📭 Активной смены нет.", reply_markup=stats_menu_kb())
         return
 
     shift_id, budget, spent, started_at = active
@@ -859,116 +1260,7 @@ async def shift_stats_handler(message: Message):
         f"💸 Поставлено: <b>{spent}</b>\n"
         f"🟢 Остаток: <b>{remain}</b>\n"
         f"📊 Прибыль по отмеченным: <b>{round(total_profit, 2)}</b>",
-        reply_markup=main_kb()
-    )
-
-
-@dp.message(F.text == "🏁 Закончить смену")
-async def end_shift_handler(message: Message, state: FSMContext):
-    if message.from_user.id != OWNER_ID:
-        return
-
-    if has_recent_action(message.from_user.id, "end_shift"):
-        return
-
-    active = get_active_shift(message.from_user.id)
-    if not active:
-        await message.answer("📭 Активной смены нет.", reply_markup=main_kb())
-        return
-
-    shift_id, budget, spent, started_at = active
-    remain = round(budget - spent, 2)
-    bets_count = count_bets_in_shift(shift_id)
-
-    await state.set_state(ShiftState.waiting_end_shift_confirm)
-    await message.answer(
-        f"🏁 <b>Подтвердить завершение смены?</b>\n\n"
-        f"💰 Бюджет: <b>{budget}</b>\n"
-        f"💸 Поставлено: <b>{spent}</b>\n"
-        f"🎯 Ставок: <b>{bets_count}</b>\n"
-        f"🟢 Остаток: <b>{remain}</b>",
-        reply_markup=yes_no_kb()
-    )
-
-
-@dp.message(ShiftState.waiting_end_shift_confirm, F.text == "✅ Подтвердить")
-async def confirm_end_shift(message: Message, state: FSMContext):
-    active = get_active_shift(message.from_user.id)
-    if not active:
-        await state.clear()
-        await message.answer("📭 Активной смены уже нет.", reply_markup=main_kb())
-        return
-
-    shift_id, budget, spent, started_at = active
-    remain = round(budget - spent, 2)
-    bets_count = count_bets_in_shift(shift_id)
-    end_shift_db(shift_id, now_str())
-    await state.clear()
-
-    await message.answer(
-        f"🏁 <b>Смена завершена</b>\n\n"
-        f"🕒 Начало: <b>{started_at} МСК</b>\n"
-        f"🕒 Конец: <b>{now_str()} МСК</b>\n"
-        f"💰 Бюджет: <b>{budget}</b>\n"
-        f"💸 Поставлено: <b>{spent}</b>\n"
-        f"🎯 Ставок: <b>{bets_count}</b>\n"
-        f"🟢 Остаток: <b>{remain}</b>",
-        reply_markup=main_kb()
-    )
-
-
-@dp.message(F.text == "📚 Последние 10 ставок")
-async def last_10_handler(message: Message):
-    if message.from_user.id != OWNER_ID:
-        return
-
-    if has_recent_action(message.from_user.id, "last_10"):
-        return
-
-    rows = get_last_bets(message.from_user.id, 10)
-    if not rows:
-        await message.answer("📭 Пока нет ставок.", reply_markup=main_kb())
-        return
-
-    lines = []
-    for i, row in enumerate(rows, start=1):
-        bet_id, sport, match_name, market, odds, stake, bookmaker, created_at, result_status = row
-        lines.append(
-            f"{i}. <b>{sport}</b> | {match_name}\n"
-            f"📌 {market}\n"
-            f"📈 КФ: <b>{odds}</b> | 💸 {stake} | 🏦 {bookmaker}\n"
-            f"🏷 Статус: <b>{RESULT_LABELS.get(result_status, result_status)}</b>"
-        )
-
-    await message.answer("\n\n".join(lines), reply_markup=main_kb())
-
-
-@dp.message(F.text == "🧾 Последняя ставка")
-async def last_bet_handler(message: Message):
-    if message.from_user.id != OWNER_ID:
-        return
-
-    if has_recent_action(message.from_user.id, "last_bet"):
-        return
-
-    row = get_last_bet(message.from_user.id)
-    if not row:
-        await message.answer("📭 Пока нет ставок.", reply_markup=main_kb())
-        return
-
-    bet_id, sport, match_name, market, odds, stake, bookmaker, created_at, result_status = row
-
-    await message.answer(
-        f"🧾 <b>Последняя ставка</b>\n\n"
-        f"🏅 {sport}\n"
-        f"🏟 <b>{match_name}</b>\n"
-        f"📌 {market}\n"
-        f"📈 КФ: <b>{odds}</b>\n"
-        f"💸 Сумма: <b>{stake}</b>\n"
-        f"🏦 БК: <b>{bookmaker}</b>\n"
-        f"🏷 Статус: <b>{RESULT_LABELS.get(result_status, result_status)}</b>\n"
-        f"🕒 Добавлена: <b>{created_at} МСК</b>",
-        reply_markup=main_kb()
+        reply_markup=stats_menu_kb()
     )
 
 
@@ -976,111 +1268,23 @@ async def last_bet_handler(message: Message):
 async def export_csv_handler(message: Message):
     if message.from_user.id != OWNER_ID:
         return
+
     path = export_bets_to_csv(message.from_user.id)
     if not path:
-        await message.answer("📭 Пока нет данных для экспорта.", reply_markup=main_kb())
-        return
-    await message.answer_document(FSInputFile(path), caption="📤 Экспорт CSV готов.", reply_markup=main_kb())
-
-
-@dp.message(F.text == "🗑 Delete last")
-async def delete_last_handler(message: Message, state: FSMContext):
-    if message.from_user.id != OWNER_ID:
+        await message.answer("📭 Пока нет данных для экспорта.", reply_markup=stats_menu_kb())
         return
 
-    last_bet = get_last_bet(message.from_user.id)
-    if not last_bet:
-        await message.answer("📭 Нет ставок для удаления.", reply_markup=main_kb())
-        return
-
-    await state.set_state(ShiftState.waiting_delete_last_confirm)
-    await message.answer(
-        "🗑 <b>Удалить последнюю ставку?</b>\n\n"
-        "Нажми <b>Подтвердить</b>, если уверен.",
-        reply_markup=yes_no_kb()
-    )
+    await message.answer_document(FSInputFile(path), caption="📤 Экспорт CSV готов.", reply_markup=stats_menu_kb())
 
 
-@dp.message(ShiftState.waiting_delete_last_confirm, F.text == "✅ Подтвердить")
-async def confirm_delete_last(message: Message, state: FSMContext):
-    ok, payload = delete_last_bet(message.from_user.id)
-    await state.clear()
-
-    if not ok:
-        await message.answer(f"⚠️ {payload}", reply_markup=main_kb())
-        return
-
-    await message.answer(
-        f"🗑 <b>Последняя ставка удалена</b>\n\n"
-        f"💸 Возвращено в расход смены: <b>{payload}</b>",
-        reply_markup=main_kb()
-    )
-
-
-@dp.message(F.text == "🏷 Отметить результат")
-async def mark_result_menu(message: Message):
-    if message.from_user.id != OWNER_ID:
-        return
-
-    last_bet = get_last_bet(message.from_user.id)
-    if not last_bet:
-        await message.answer("📭 Нет ставок для отметки результата.", reply_markup=main_kb())
-        return
-
-    await message.answer(
-        "🏷 <b>Выбери результат для последней ставки</b>",
-        reply_markup=result_kb()
-    )
-
-
-@dp.message(F.text.in_(list(RESULT_MAP.keys())))
-async def set_result_handler(message: Message):
-    if message.from_user.id != OWNER_ID:
-        return
-
-    result_status = RESULT_MAP[message.text]
-    ok, payload = update_last_bet_result(message.from_user.id, result_status)
-    if not ok:
-        await message.answer(f"⚠️ {payload}", reply_markup=main_kb())
-        return
-
-    await message.answer(
-        f"✅ <b>Результат обновлён</b>\n\n"
-        f"🏷 Новый статус: <b>{RESULT_LABELS[result_status]}</b>\n"
-        f"🆔 Ставка: <b>{payload}</b>",
-        reply_markup=main_kb()
-    )
-
-
-@dp.message(F.text == "🎯 Добавить ставку")
-async def add_bet_hint(message: Message):
-    if message.from_user.id != OWNER_ID:
-        return
-
-    active = get_active_shift(message.from_user.id)
-    if not active:
-        await message.answer(
-            "⚠️ Сначала начни смену.\n"
-            "После этого просто перешли мне сообщение со ставкой.",
-            reply_markup=main_kb()
-        )
-        return
-
-    await message.answer(
-        "📥 <b>Перешли мне сообщение со ставкой</b>\n\n"
-        "Важно:\n"
-        "• только пересланное сообщение\n"
-        "• желательно одна ставка в одном сообщении\n"
-        "• если формат не распознается, я так и напишу",
-        reply_markup=main_kb()
-    )
-
-
+# =========================
+# BET INPUT FLOW
+# =========================
 @dp.message(F.text == "🔁 Повторить ввод суммы")
 async def retry_amount_handler(message: Message, state: FSMContext):
     current_state = await state.get_state()
     if current_state != ShiftState.waiting_bet_amount.state:
-        await message.answer("ℹ️ Сейчас нет активного ввода суммы.", reply_markup=main_kb())
+        await message.answer("ℹ️ Сейчас нет активного ввода суммы.", reply_markup=bets_menu_kb())
         return
 
     await message.answer(
@@ -1090,9 +1294,6 @@ async def retry_amount_handler(message: Message, state: FSMContext):
     )
 
 
-# =========================
-# BET INPUT FLOW
-# =========================
 @dp.message(F.text)
 async def universal_text_handler(message: Message, state: FSMContext):
     if message.from_user.id != OWNER_ID:
@@ -1101,23 +1302,22 @@ async def universal_text_handler(message: Message, state: FSMContext):
     text = (message.text or "").strip()
     current_state = await state.get_state()
 
-    # если ждём подтверждение завершения или удаления — пропускаем в спец-хендлеры выше
-    if current_state in (
+    if current_state in {
+        ShiftState.waiting_budget.state,
         ShiftState.waiting_end_shift_confirm.state,
         ShiftState.waiting_delete_last_confirm.state,
-    ):
-        if text not in {"✅ Подтвердить", "❌ Отмена"}:
-            await message.answer("⚠️ Используй кнопки подтверждения или отмены.")
+        ShiftState.waiting_result_bet_number.state,
+        ShiftState.waiting_result_status.state,
+    }:
         return
 
-    # ввод суммы для уже распознанной ставки
     if current_state == ShiftState.waiting_bet_amount.state:
         data = await state.get_data()
         pending = data.get("pending_bet")
 
         if not pending:
             await state.clear()
-            await message.answer("⚠️ Не нашёл ожидаемую ставку. Начни заново.", reply_markup=main_kb())
+            await message.answer("⚠️ Не нашёл ожидаемую ставку. Начни заново.", reply_markup=bets_menu_kb())
             return
 
         if text == "🔁 Повторить ввод суммы":
@@ -1138,7 +1338,7 @@ async def universal_text_handler(message: Message, state: FSMContext):
         active = get_active_shift(message.from_user.id)
         if not active:
             await state.clear()
-            await message.answer("📭 Активной смены нет.", reply_markup=main_kb())
+            await message.answer("📭 Активной смены нет.", reply_markup=shift_menu_kb(False))
             return
 
         shift_id, budget, spent, started_at = active
@@ -1150,7 +1350,7 @@ async def universal_text_handler(message: Message, state: FSMContext):
                 await state.clear()
                 await message.answer(
                     "⚠️ Эта ставка уже была добавлена ранее.",
-                    reply_markup=main_kb()
+                    reply_markup=bets_menu_kb()
                 )
                 return
 
@@ -1158,7 +1358,7 @@ async def universal_text_handler(message: Message, state: FSMContext):
             await state.clear()
             await message.answer(
                 f"❌ Ошибка записи ставки:\n<code>{e}</code>",
-                reply_markup=main_kb()
+                reply_markup=bets_menu_kb()
             )
             return
 
@@ -1177,17 +1377,16 @@ async def universal_text_handler(message: Message, state: FSMContext):
             f"📊 Поставлено: <b>{new_spent}</b> / <b>{budget}</b>\n"
             f"🎯 Ставок в смене: <b>{bets_count}</b>\n"
             f"🟢 Остаток: <b>{remain}</b>{warn}",
-            reply_markup=main_kb()
+            reply_markup=bets_menu_kb()
         )
         return
 
-    # всё, что не переслано — игнорим для добавления ставки
     if not is_forward_message(message):
         return
 
     active = get_active_shift(message.from_user.id)
     if not active:
-        await message.answer("⚠️ Сначала начни смену.", reply_markup=main_kb())
+        await message.answer("⚠️ Сначала начни смену.", reply_markup=shift_menu_kb(False))
         return
 
     parsed = parse_bet(text)
@@ -1196,7 +1395,7 @@ async def universal_text_handler(message: Message, state: FSMContext):
             "⚠️ <b>Формат ставки не распознан</b>\n\n"
             "Я не смог корректно разобрать сообщение.\n"
             "Перешли ставку ещё раз в исходном формате.",
-            reply_markup=main_kb()
+            reply_markup=bets_menu_kb()
         )
         log_warning("Bet parse failed")
         return
@@ -1239,7 +1438,7 @@ async def reminder_job():
                 f"📈 КФ: <b>{item['odds']}</b>\n"
                 f"🏦 БК: <b>{item['bookmaker']}</b>\n"
                 f"🕒 Старт: <b>{dt_text} МСК</b>",
-                reply_markup=main_kb()
+                reply_markup=bets_menu_kb()
             )
             mark_reminder_sent(item["id"])
             log_info(f"Reminder sent | bet_id={item['id']}")
