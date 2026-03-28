@@ -19,6 +19,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import FSInputFile, KeyboardButton, Message, ReplyKeyboardMarkup
+from openpyxl import Workbook
 
 # =========================
 # CONFIG
@@ -70,8 +71,11 @@ class ShiftState(StatesGroup):
     waiting_bet_amount = State()
     waiting_end_shift_confirm = State()
     waiting_delete_last_confirm = State()
+    waiting_delete_bet_number = State()
     waiting_result_bet_number = State()
     waiting_result_status = State()
+    waiting_edit_stake_bet_number = State()
+    waiting_edit_stake_value = State()
 
 
 # =========================
@@ -169,19 +173,27 @@ def calc_settlement(stake: float, odds: float, result_status: str):
     return None, None
 
 
+def calc_roi(total_profit: float, total_stake: float) -> float:
+    if not total_stake:
+        return 0.0
+    return round((total_profit / total_stake) * 100, 2)
+
+
 def save_log(level: str, message: str):
     db = connect()
-    db.execute("""
+    db.execute(
+        """
         CREATE TABLE IF NOT EXISTS logs(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             level TEXT NOT NULL,
             message TEXT NOT NULL,
             created_at TEXT NOT NULL
         )
-    """)
+        """
+    )
     db.execute(
         "INSERT INTO logs(level, message, created_at) VALUES (?, ?, ?)",
-        (level, message, now_str())
+        (level, message, now_str()),
     )
     db.commit()
     db.close()
@@ -218,7 +230,8 @@ def add_column_if_not_exists(table_name: str, column_name: str, ddl: str):
 def init_db():
     db = connect()
 
-    db.execute("""
+    db.execute(
+        """
     CREATE TABLE IF NOT EXISTS shifts(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER NOT NULL,
@@ -228,9 +241,11 @@ def init_db():
         spent REAL NOT NULL DEFAULT 0,
         status TEXT NOT NULL
     )
-    """)
+    """
+    )
 
-    db.execute("""
+    db.execute(
+        """
     CREATE TABLE IF NOT EXISTS bets(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         shift_id INTEGER NOT NULL,
@@ -254,16 +269,19 @@ def init_db():
         payout REAL,
         profit REAL
     )
-    """)
+    """
+    )
 
-    db.execute("""
+    db.execute(
+        """
     CREATE TABLE IF NOT EXISTS logs(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         level TEXT NOT NULL,
         message TEXT NOT NULL,
         created_at TEXT NOT NULL
     )
-    """)
+    """
+    )
 
     db.commit()
     db.close()
@@ -279,23 +297,29 @@ def init_db():
 
 def get_active_shift(user_id: int):
     db = connect()
-    row = db.execute("""
+    row = db.execute(
+        """
         SELECT id, budget, spent, started_at
         FROM shifts
         WHERE user_id = ? AND status = 'active'
         ORDER BY id DESC
         LIMIT 1
-    """, (user_id,)).fetchone()
+    """,
+        (user_id,),
+    ).fetchone()
     db.close()
     return row
 
 
 def start_shift_db(user_id: int, started_at: str, budget: float):
     db = connect()
-    db.execute("""
+    db.execute(
+        """
         INSERT INTO shifts(user_id, started_at, budget, spent, status)
         VALUES (?, ?, ?, 0, 'active')
-    """, (user_id, started_at, budget))
+    """,
+        (user_id, started_at, budget),
+    )
     db.commit()
     db.close()
     log_info(f"Shift started | user={user_id} | budget={budget}")
@@ -303,11 +327,14 @@ def start_shift_db(user_id: int, started_at: str, budget: float):
 
 def end_shift_db(shift_id: int, ended_at: str):
     db = connect()
-    db.execute("""
+    db.execute(
+        """
         UPDATE shifts
         SET ended_at = ?, status = 'ended'
         WHERE id = ?
-    """, (ended_at, shift_id))
+    """,
+        (ended_at, shift_id),
+    )
     db.commit()
     db.close()
     log_info(f"Shift ended | shift_id={shift_id}")
@@ -315,7 +342,8 @@ def end_shift_db(shift_id: int, ended_at: str):
 
 def add_bet_db(shift_id: int, user_id: int, created_at: str, parsed: dict, stake: float):
     db = connect()
-    db.execute("""
+    db.execute(
+        """
         INSERT INTO bets(
             shift_id, user_id, created_at,
             sport, tournament, match_name, match_date, match_time, match_start_at,
@@ -323,30 +351,35 @@ def add_bet_db(shift_id: int, user_id: int, created_at: str, parsed: dict, stake
             reminder_sent, result_status, payout, profit
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'pending', NULL, NULL)
-    """, (
-        shift_id,
-        user_id,
-        created_at,
-        parsed["sport"],
-        parsed["tournament"],
-        parsed["match_name"],
-        parsed["match_date"],
-        parsed["match_time"],
-        parsed["match_start_at"],
-        parsed["market"],
-        parsed["odds"],
-        parsed["ev"],
-        parsed["bookmaker"],
-        stake,
-        parsed["source_text"],
-        parsed["hash"],
-    ))
+    """,
+        (
+            shift_id,
+            user_id,
+            created_at,
+            parsed["sport"],
+            parsed["tournament"],
+            parsed["match_name"],
+            parsed["match_date"],
+            parsed["match_time"],
+            parsed["match_start_at"],
+            parsed["market"],
+            parsed["odds"],
+            parsed["ev"],
+            parsed["bookmaker"],
+            stake,
+            parsed["source_text"],
+            parsed["hash"],
+        ),
+    )
 
-    db.execute("""
+    db.execute(
+        """
         UPDATE shifts
         SET spent = spent + ?
         WHERE id = ?
-    """, (stake, shift_id))
+    """,
+        (stake, shift_id),
+    )
 
     db.commit()
     db.close()
@@ -355,13 +388,32 @@ def add_bet_db(shift_id: int, user_id: int, created_at: str, parsed: dict, stake
 
 def get_last_bets(user_id: int, limit: int = 20):
     db = connect()
-    rows = db.execute("""
+    rows = db.execute(
+        """
         SELECT id, sport, match_name, market, odds, stake, bookmaker, created_at, result_status
         FROM bets
         WHERE user_id = ?
         ORDER BY id DESC
         LIMIT ?
-    """, (user_id, limit)).fetchall()
+    """,
+        (user_id, limit),
+    ).fetchall()
+    db.close()
+    return rows
+
+
+def get_pending_bets(user_id: int, limit: int = 20):
+    db = connect()
+    rows = db.execute(
+        """
+        SELECT id, sport, match_name, market, odds, stake, bookmaker, created_at, result_status
+        FROM bets
+        WHERE user_id = ? AND result_status = 'pending'
+        ORDER BY id DESC
+        LIMIT ?
+    """,
+        (user_id, limit),
+    ).fetchall()
     db.close()
     return rows
 
@@ -373,12 +425,15 @@ def get_last_bet(user_id: int):
 
 def get_bet_by_id(bet_id: int):
     db = connect()
-    row = db.execute("""
+    row = db.execute(
+        """
         SELECT id, sport, tournament, match_name, match_date, match_time, market, odds, ev,
-               bookmaker, stake, created_at, result_status, payout, profit
+               bookmaker, stake, created_at, result_status, payout, profit, shift_id
         FROM bets
         WHERE id = ?
-    """, (bet_id,)).fetchone()
+    """,
+        (bet_id,),
+    ).fetchone()
     db.close()
     return row
 
@@ -392,7 +447,8 @@ def count_bets_in_shift(shift_id: int) -> int:
 
 def get_shift_stats(shift_id: int):
     db = connect()
-    row = db.execute("""
+    row = db.execute(
+        """
         SELECT
             COUNT(*),
             COALESCE(SUM(stake), 0),
@@ -407,18 +463,53 @@ def get_shift_stats(shift_id: int):
             COALESCE(SUM(profit), 0)
         FROM bets
         WHERE shift_id = ?
-    """, (shift_id,)).fetchone()
+    """,
+        (shift_id,),
+    ).fetchone()
+    db.close()
+    return row
+
+
+def get_today_stats(user_id: int):
+    db = connect()
+    start_day = now_dt().replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+    end_day = now_dt().replace(hour=23, minute=59, second=59, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
+
+    row = db.execute(
+        """
+        SELECT
+            COUNT(*),
+            COALESCE(SUM(stake), 0),
+            COALESCE(AVG(odds), 0),
+            COALESCE(AVG(ev), 0),
+            COALESCE(SUM(CASE WHEN result_status = 'win' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN result_status = 'lose' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN result_status = 'half_win' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN result_status = 'half_lose' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN result_status = 'refund' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN result_status = 'pending' THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(profit), 0)
+        FROM bets
+        WHERE user_id = ?
+          AND created_at >= ?
+          AND created_at <= ?
+    """,
+        (user_id, start_day, end_day),
+    ).fetchone()
     db.close()
     return row
 
 
 def update_bet_result(bet_id: int, result_status: str):
     db = connect()
-    row = db.execute("""
+    row = db.execute(
+        """
         SELECT stake, odds
         FROM bets
         WHERE id = ?
-    """, (bet_id,)).fetchone()
+    """,
+        (bet_id,),
+    ).fetchone()
 
     if not row:
         db.close()
@@ -427,11 +518,14 @@ def update_bet_result(bet_id: int, result_status: str):
     stake, odds = row
     payout, profit = calc_settlement(stake, odds, result_status)
 
-    db.execute("""
+    db.execute(
+        """
         UPDATE bets
         SET result_status = ?, payout = ?, profit = ?
         WHERE id = ?
-    """, (result_status, payout, profit, bet_id))
+    """,
+        (result_status, payout, profit, bet_id),
+    )
     db.commit()
     db.close()
 
@@ -441,11 +535,14 @@ def update_bet_result(bet_id: int, result_status: str):
 
 def delete_bet_by_id(bet_id: int):
     db = connect()
-    row = db.execute("""
+    row = db.execute(
+        """
         SELECT shift_id, stake
         FROM bets
         WHERE id = ?
-    """, (bet_id,)).fetchone()
+    """,
+        (bet_id,),
+    ).fetchone()
 
     if not row:
         db.close()
@@ -462,16 +559,54 @@ def delete_bet_by_id(bet_id: int):
     return True, stake
 
 
+def update_bet_stake(bet_id: int, new_stake: float):
+    db = connect()
+    row = db.execute(
+        """
+        SELECT shift_id, stake, odds, result_status
+        FROM bets
+        WHERE id = ?
+    """,
+        (bet_id,),
+    ).fetchone()
+
+    if not row:
+        db.close()
+        return False, "Ставка не найдена."
+
+    shift_id, old_stake, odds, result_status = row
+    delta = new_stake - old_stake
+    payout, profit = calc_settlement(new_stake, odds, result_status)
+
+    db.execute(
+        """
+        UPDATE bets
+        SET stake = ?, payout = ?, profit = ?
+        WHERE id = ?
+    """,
+        (new_stake, payout, profit, bet_id),
+    )
+    db.execute("UPDATE shifts SET spent = spent + ? WHERE id = ?", (delta, shift_id))
+    db.commit()
+    db.close()
+
+    log_info(f"Bet stake updated | bet_id={bet_id} | old={old_stake} | new={new_stake}")
+    return True, old_stake
+
+
 def export_bets_to_csv(user_id: int) -> str | None:
     db = connect()
-    rows = db.execute("""
+    rows = db.execute(
+        """
         SELECT
             id, shift_id, created_at, sport, tournament, match_name, match_date, match_time,
             match_start_at, market, odds, ev, bookmaker, stake, result_status, payout, profit
         FROM bets
         WHERE user_id = ?
         ORDER BY id DESC
-    """, (user_id,)).fetchall()
+    """,
+        (user_id,),
+    ).fetchall()
     db.close()
 
     if not rows:
@@ -492,15 +627,70 @@ def export_bets_to_csv(user_id: int) -> str | None:
     return str(export_path)
 
 
+def export_bets_to_xlsx(user_id: int) -> str | None:
+    db = connect()
+    rows = db.execute(
+        """
+        SELECT
+            id, shift_id, created_at, sport, tournament, match_name, match_date, match_time,
+            match_start_at, market, odds, ev, bookmaker, stake, result_status, payout, profit
+        FROM bets
+        WHERE user_id = ?
+        ORDER BY id DESC
+    """,
+        (user_id,),
+    ).fetchall()
+    db.close()
+
+    if not rows:
+        return None
+
+    filename = f"bets_export_{now_dt().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Bets"
+
+    headers = [
+        "id", "shift_id", "created_at", "sport", "tournament", "match_name",
+        "match_date", "match_time", "match_start_at", "market", "odds", "ev",
+        "bookmaker", "stake", "result_status", "payout", "profit"
+    ]
+    ws.append(headers)
+
+    for row in rows:
+        ws.append(list(row))
+
+    wb.save(filename)
+    log_info(f"XLSX exported | rows={len(rows)}")
+    return filename
+
+
+def get_recent_logs(limit: int = 10):
+    db = connect()
+    rows = db.execute(
+        """
+        SELECT level, message, created_at
+        FROM logs
+        ORDER BY id DESC
+        LIMIT ?
+    """,
+        (limit,),
+    ).fetchall()
+    db.close()
+    return rows
+
+
 def get_due_reminders():
     db = connect()
-    rows = db.execute("""
+    rows = db.execute(
+        """
         SELECT id, user_id, match_name, market, match_start_at, stake, odds, bookmaker
         FROM bets
         WHERE reminder_sent = 0
           AND result_status = 'pending'
           AND match_start_at IS NOT NULL
-    """).fetchall()
+    """
+    ).fetchall()
     db.close()
 
     now = now_dt()
@@ -517,16 +707,18 @@ def get_due_reminders():
             continue
 
         if now <= dt <= upper:
-            due.append({
-                "id": bet_id,
-                "user_id": user_id,
-                "match_name": match_name,
-                "market": market,
-                "match_start_at": dt,
-                "stake": stake,
-                "odds": odds,
-                "bookmaker": bookmaker,
-            })
+            due.append(
+                {
+                    "id": bet_id,
+                    "user_id": user_id,
+                    "match_name": match_name,
+                    "market": market,
+                    "match_start_at": dt,
+                    "stake": stake,
+                    "odds": odds,
+                    "bookmaker": bookmaker,
+                }
+            )
 
     return due
 
@@ -633,7 +825,7 @@ def main_menu_kb():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🎯 Смена"), KeyboardButton(text="📚 Ставки")],
-            [KeyboardButton(text="📊 Статистика")],
+            [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="⚙️ Сервис")],
             [KeyboardButton(text="❌ Отмена")],
         ],
         resize_keyboard=True,
@@ -663,6 +855,7 @@ def bets_menu_kb():
             [KeyboardButton(text="➕ Добавить ставку"), KeyboardButton(text="🧾 Последняя ставка")],
             [KeyboardButton(text="📚 Последние 20 ставок")],
             [KeyboardButton(text="🏷 Отметить результат"), KeyboardButton(text="🗑 Delete last")],
+            [KeyboardButton(text="✏️ Исправить сумму")],
             [KeyboardButton(text="⬅️ Назад")],
         ],
         resize_keyboard=True,
@@ -673,7 +866,20 @@ def bets_menu_kb():
 def stats_menu_kb():
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📈 Статистика по смене"), KeyboardButton(text="📤 Export CSV")],
+            [KeyboardButton(text="📈 Статистика по смене"), KeyboardButton(text="📅 Статистика за день")],
+            [KeyboardButton(text="📤 Export CSV"), KeyboardButton(text="📦 Export XLSX")],
+            [KeyboardButton(text="📌 Ближайшие матчи")],
+            [KeyboardButton(text="⬅️ Назад")],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+    )
+
+
+def service_menu_kb():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📋 Логи")],
             [KeyboardButton(text="⬅️ Назад")],
         ],
         resize_keyboard=True,
@@ -735,21 +941,8 @@ async def cmd_start(message: Message, state: FSMContext):
         "• напоминать о матчах\n"
         "• считать статистику\n\n"
         "Выбери раздел 👇",
-        reply_markup=main_menu_kb()
+        reply_markup=main_menu_kb(),
     )
-
-
-@dp.message(Command("export_csv"))
-async def cmd_export_csv(message: Message):
-    if message.from_user.id != OWNER_ID:
-        return
-
-    path = export_bets_to_csv(message.from_user.id)
-    if not path:
-        await message.answer("📭 Пока нет данных для экспорта.", reply_markup=stats_menu_kb())
-        return
-
-    await message.answer_document(FSInputFile(path), caption="📤 Экспорт CSV готов.", reply_markup=stats_menu_kb())
 
 
 # =========================
@@ -780,13 +973,12 @@ async def open_shift_menu(message: Message, state: FSMContext):
             f"💰 Бюджет: <b>{budget}</b>\n"
             f"💸 Поставлено: <b>{spent}</b>\n"
             f"🟢 Остаток: <b>{remain}</b>",
-            reply_markup=shift_menu_kb(True)
+            reply_markup=shift_menu_kb(True),
         )
     else:
         await message.answer(
-            "🎯 <b>Раздел «Смена»</b>\n\n"
-            "Здесь ты можешь начать или завершить смену.",
-            reply_markup=shift_menu_kb(False)
+            "🎯 <b>Раздел «Смена»</b>\n\nЗдесь ты можешь начать или завершить смену.",
+            reply_markup=shift_menu_kb(False),
         )
 
 
@@ -794,9 +986,8 @@ async def open_shift_menu(message: Message, state: FSMContext):
 async def open_bets_menu(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
-        "📚 <b>Раздел «Ставки»</b>\n\n"
-        "Здесь можно добавлять ставки, смотреть историю и отмечать результаты.",
-        reply_markup=bets_menu_kb()
+        "📚 <b>Раздел «Ставки»</b>\n\nЗдесь можно добавлять ставки, смотреть историю и отмечать результаты.",
+        reply_markup=bets_menu_kb(),
     )
 
 
@@ -804,9 +995,17 @@ async def open_bets_menu(message: Message, state: FSMContext):
 async def open_stats_menu(message: Message, state: FSMContext):
     await state.clear()
     await message.answer(
-        "📊 <b>Раздел «Статистика»</b>\n\n"
-        "Здесь можно смотреть статистику по смене и выгружать CSV.",
-        reply_markup=stats_menu_kb()
+        "📊 <b>Раздел «Статистика»</b>\n\nЗдесь можно смотреть статистику по смене и выгружать отчёты.",
+        reply_markup=stats_menu_kb(),
+    )
+
+
+@dp.message(F.text == "⚙️ Сервис")
+async def open_service_menu(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(
+        "⚙️ <b>Раздел «Сервис»</b>\n\nЗдесь собраны служебные функции.",
+        reply_markup=service_menu_kb(),
     )
 
 
@@ -833,19 +1032,18 @@ async def start_shift_button(message: Message, state: FSMContext):
             f"💸 Поставлено: <b>{spent}</b>\n"
             f"🎯 Ставок в смене: <b>{bets_count}</b>\n"
             f"🟢 Остаток: <b>{remain}</b>",
-            reply_markup=shift_menu_kb(True)
+            reply_markup=shift_menu_kb(True),
         )
         return
 
     await state.set_state(ShiftState.waiting_budget)
     await message.answer(
-        "💰 <b>Введи бюджет смены</b>\n\n"
-        "Пример: <code>10000</code>",
+        "💰 <b>Введи бюджет смены</b>\n\nПример: <code>10000</code>",
         reply_markup=ReplyKeyboardMarkup(
             keyboard=[[KeyboardButton(text="❌ Отмена")]],
             resize_keyboard=True,
             is_persistent=True,
-        )
+        ),
     )
 
 
@@ -857,13 +1055,12 @@ async def budget_input(message: Message, state: FSMContext):
             raise ValueError
     except Exception:
         await message.answer(
-            "⚠️ Бюджет не распознан.\n"
-            "Введи число, например: <code>10000</code>",
+            "⚠️ Бюджет не распознан.\nВведи число, например: <code>10000</code>",
             reply_markup=ReplyKeyboardMarkup(
                 keyboard=[[KeyboardButton(text="❌ Отмена")]],
                 resize_keyboard=True,
                 is_persistent=True,
-            )
+            ),
         )
         return
 
@@ -874,7 +1071,7 @@ async def budget_input(message: Message, state: FSMContext):
         f"🟢 Статус: <b>Смена активна</b>\n"
         f"💰 Бюджет: <b>{budget}</b>\n"
         f"🕒 Время старта: <b>{now_str()} МСК</b>",
-        reply_markup=shift_menu_kb(True)
+        reply_markup=shift_menu_kb(True),
     )
 
 
@@ -902,7 +1099,7 @@ async def current_shift_handler(message: Message):
         f"💸 Поставлено: <b>{spent}</b>\n"
         f"🎯 Ставок в смене: <b>{bets_count}</b>\n"
         f"🟢 Остаток: <b>{remain}</b>",
-        reply_markup=shift_menu_kb(True)
+        reply_markup=shift_menu_kb(True),
     )
 
 
@@ -930,7 +1127,7 @@ async def end_shift_handler(message: Message, state: FSMContext):
         f"💸 Поставлено: <b>{spent}</b>\n"
         f"🎯 Ставок: <b>{bets_count}</b>\n"
         f"🟢 Остаток: <b>{remain}</b>",
-        reply_markup=yes_no_kb()
+        reply_markup=yes_no_kb(),
     )
 
 
@@ -956,7 +1153,7 @@ async def confirm_end_shift(message: Message, state: FSMContext):
         f"💸 Поставлено: <b>{spent}</b>\n"
         f"🎯 Ставок: <b>{bets_count}</b>\n"
         f"🟢 Остаток: <b>{remain}</b>",
-        reply_markup=shift_menu_kb(False)
+        reply_markup=shift_menu_kb(False),
     )
 
 
@@ -970,10 +1167,7 @@ async def add_bet_hint(message: Message):
 
     active = get_active_shift(message.from_user.id)
     if not active:
-        await message.answer(
-            "⚠️ Сначала начни смену.",
-            reply_markup=shift_menu_kb(False)
-        )
+        await message.answer("⚠️ Сначала начни смену.", reply_markup=shift_menu_kb(False))
         return
 
     await message.answer(
@@ -982,7 +1176,7 @@ async def add_bet_hint(message: Message):
         "• только пересланное сообщение\n"
         "• бот берёт первую корректную ставку из сообщения\n"
         "• если формат не распознается, я так и напишу",
-        reply_markup=bets_menu_kb()
+        reply_markup=bets_menu_kb(),
     )
 
 
@@ -1011,7 +1205,7 @@ async def last_bet_handler(message: Message):
         f"🏦 БК: <b>{bookmaker}</b>\n"
         f"🏷 Статус: <b>{RESULT_LABELS.get(result_status, result_status)}</b>\n"
         f"🕒 Добавлена: <b>{created_at} МСК</b>",
-        reply_markup=bets_menu_kb()
+        reply_markup=bets_menu_kb(),
     )
 
 
@@ -1063,7 +1257,7 @@ async def delete_last_handler(message: Message, state: FSMContext):
         f"📈 КФ: <b>{odds}</b>\n"
         f"🏦 БК: <b>{bookmaker}</b>\n"
         f"🏷 Статус: <b>{RESULT_LABELS.get(result_status, result_status)}</b>",
-        reply_markup=yes_no_kb()
+        reply_markup=yes_no_kb(),
     )
 
 
@@ -1085,9 +1279,110 @@ async def confirm_delete_last(message: Message, state: FSMContext):
         return
 
     await message.answer(
-        f"🗑 <b>Ставка удалена</b>\n\n"
-        f"💸 Возвращено в расход смены: <b>{stake}</b>",
-        reply_markup=bets_menu_kb()
+        f"🗑 <b>Ставка удалена</b>\n\n💸 Возвращено в расход смены: <b>{stake}</b>",
+        reply_markup=bets_menu_kb(),
+    )
+
+
+@dp.message(F.text == "✏️ Исправить сумму")
+async def edit_stake_start(message: Message, state: FSMContext):
+    if message.from_user.id != OWNER_ID:
+        return
+
+    rows = get_last_bets(message.from_user.id, 20)
+    if not rows:
+        await message.answer("📭 Нет ставок для редактирования.", reply_markup=bets_menu_kb())
+        return
+
+    lines = ["✏️ <b>Выбери ставку для изменения суммы</b>\n"]
+    mapping = {}
+    for idx, row in enumerate(rows, start=1):
+        bet_id, sport, match_name, market, odds, stake, bookmaker, created_at, result_status = row
+        mapping[str(idx)] = bet_id
+        lines.append(
+            f"{idx}. <b>{match_name}</b>\n"
+            f"📌 {market}\n"
+            f"💸 {stake} | 📈 {odds}\n"
+            f"🏷 {RESULT_LABELS.get(result_status, result_status)}\n"
+        )
+
+    await state.update_data(edit_stake_choices=mapping)
+    await state.set_state(ShiftState.waiting_edit_stake_bet_number)
+    await message.answer(
+        "\n".join(lines) + "\nНапиши номер ставки сообщением.",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="❌ Отмена")]],
+            resize_keyboard=True,
+            is_persistent=True,
+        ),
+    )
+
+
+@dp.message(ShiftState.waiting_edit_stake_bet_number)
+async def edit_stake_choose_number(message: Message, state: FSMContext):
+    text = (message.text or "").strip()
+    data = await state.get_data()
+    mapping = data.get("edit_stake_choices", {})
+
+    if text not in mapping:
+        await message.answer("⚠️ Номер не найден. Напиши номер ставки из списка.")
+        return
+
+    bet_id = mapping[text]
+    bet = get_bet_by_id(bet_id)
+    if not bet:
+        await state.clear()
+        await message.answer("⚠️ Не удалось найти ставку.", reply_markup=bets_menu_kb())
+        return
+
+    (
+        _id, sport, tournament, match_name, match_date, match_time, market,
+        odds, ev, bookmaker, stake, created_at, result_status, payout, profit, shift_id
+    ) = bet
+
+    await state.update_data(edit_stake_bet_id=bet_id)
+    await state.set_state(ShiftState.waiting_edit_stake_value)
+    await message.answer(
+        f"✏️ <b>Изменение суммы ставки</b>\n\n"
+        f"🏟 <b>{match_name}</b>\n"
+        f"📌 {market}\n"
+        f"💸 Текущая сумма: <b>{stake}</b>\n\n"
+        f"Напиши новую сумму.",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="❌ Отмена")]],
+            resize_keyboard=True,
+            is_persistent=True,
+        ),
+    )
+
+
+@dp.message(ShiftState.waiting_edit_stake_value)
+async def edit_stake_value(message: Message, state: FSMContext):
+    data = await state.get_data()
+    bet_id = data.get("edit_stake_bet_id")
+    if not bet_id:
+        await state.clear()
+        await message.answer("⚠️ Не выбрана ставка.", reply_markup=bets_menu_kb())
+        return
+
+    try:
+        new_stake = as_float((message.text or "").strip())
+        if new_stake <= 0:
+            raise ValueError
+    except Exception:
+        await message.answer("⚠️ Сумма не распознана. Введи число, например: <code>1500</code>")
+        return
+
+    ok, old_stake = update_bet_stake(bet_id, new_stake)
+    await state.clear()
+
+    if not ok:
+        await message.answer(f"⚠️ {old_stake}", reply_markup=bets_menu_kb())
+        return
+
+    await message.answer(
+        f"✅ <b>Сумма обновлена</b>\n\nСтарая: <b>{old_stake}</b>\nНовая: <b>{new_stake}</b>",
+        reply_markup=bets_menu_kb(),
     )
 
 
@@ -1099,9 +1394,9 @@ async def mark_result_start(message: Message, state: FSMContext):
     if message.from_user.id != OWNER_ID:
         return
 
-    rows = get_last_bets(message.from_user.id, 20)
+    rows = get_pending_bets(message.from_user.id, 20)
     if not rows:
-        await message.answer("📭 Нет ставок для отметки результата.", reply_markup=bets_menu_kb())
+        await message.answer("📭 Нет ожидающих ставок для отметки результата.", reply_markup=bets_menu_kb())
         return
 
     lines = ["🏷 <b>Выбери ставку по номеру</b>\n"]
@@ -1126,7 +1421,7 @@ async def mark_result_start(message: Message, state: FSMContext):
             keyboard=[[KeyboardButton(text="❌ Отмена")]],
             resize_keyboard=True,
             is_persistent=True,
-        )
+        ),
     )
 
 
@@ -1138,15 +1433,7 @@ async def result_bet_number_input(message: Message, state: FSMContext):
     mapping = data.get("result_choices", {})
 
     if text not in mapping:
-        await message.answer(
-            "⚠️ Номер не найден.\n"
-            "Напиши номер ставки из списка.",
-            reply_markup=ReplyKeyboardMarkup(
-                keyboard=[[KeyboardButton(text="❌ Отмена")]],
-                resize_keyboard=True,
-                is_persistent=True,
-            )
-        )
+        await message.answer("⚠️ Номер не найден. Напиши номер ставки из списка.")
         return
 
     bet_id = mapping[text]
@@ -1158,7 +1445,7 @@ async def result_bet_number_input(message: Message, state: FSMContext):
 
     (
         _id, sport, tournament, match_name, match_date, match_time, market,
-        odds, ev, bookmaker, stake, created_at, result_status, payout, profit
+        odds, ev, bookmaker, stake, created_at, result_status, payout, profit, shift_id
     ) = bet
 
     await state.update_data(selected_bet_id=bet_id)
@@ -1173,7 +1460,7 @@ async def result_bet_number_input(message: Message, state: FSMContext):
         f"🏦 БК: <b>{bookmaker}</b>\n"
         f"🏷 Текущий статус: <b>{RESULT_LABELS.get(result_status, result_status)}</b>\n\n"
         f"Теперь выбери новый результат:",
-        reply_markup=result_kb()
+        reply_markup=result_kb(),
     )
 
 
@@ -1199,7 +1486,7 @@ async def set_result_handler(message: Message, state: FSMContext):
     if bet:
         (
             _id, sport, tournament, match_name, match_date, match_time, market,
-            odds, ev, bookmaker, stake, created_at, result_status_db, payout, profit
+            odds, ev, bookmaker, stake, created_at, result_status_db, payout, profit, shift_id
         ) = bet
 
         extra = ""
@@ -1212,7 +1499,7 @@ async def set_result_handler(message: Message, state: FSMContext):
             f"✅ <b>Результат обновлён</b>\n\n"
             f"🏟 <b>{match_name}</b>\n"
             f"🏷 Новый статус: <b>{RESULT_LABELS.get(result_status_db, result_status_db)}</b>{extra}",
-            reply_markup=bets_menu_kb()
+            reply_markup=bets_menu_kb(),
         )
     else:
         await message.answer("✅ Результат обновлён.", reply_markup=bets_menu_kb())
@@ -1243,6 +1530,7 @@ async def shift_stats_handler(message: Message):
     ) = stats
 
     remain = round(budget - spent, 2)
+    roi = calc_roi(total_profit, total_stake)
 
     await message.answer(
         f"📈 <b>Статистика по смене</b>\n\n"
@@ -1259,8 +1547,44 @@ async def shift_stats_handler(message: Message):
         f"💰 Бюджет: <b>{budget}</b>\n"
         f"💸 Поставлено: <b>{spent}</b>\n"
         f"🟢 Остаток: <b>{remain}</b>\n"
-        f"📊 Прибыль по отмеченным: <b>{round(total_profit, 2)}</b>",
-        reply_markup=stats_menu_kb()
+        f"📊 Прибыль по отмеченным: <b>{round(total_profit, 2)}</b>\n"
+        f"📐 ROI: <b>{roi}%</b>",
+        reply_markup=stats_menu_kb(),
+    )
+
+
+@dp.message(F.text == "📅 Статистика за день")
+async def today_stats_handler(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+
+    if has_recent_action(message.from_user.id, "today_stats"):
+        return
+
+    stats = get_today_stats(message.from_user.id)
+
+    (
+        total_bets, total_stake, avg_odds, avg_ev,
+        wins, loses, half_wins, half_loses, refunds, pendings, total_profit
+    ) = stats
+
+    roi = calc_roi(total_profit, total_stake)
+
+    await message.answer(
+        f"📅 <b>Статистика за сегодня</b>\n\n"
+        f"🎯 Ставок: <b>{total_bets}</b>\n"
+        f"💸 Общая сумма: <b>{round(total_stake, 2)}</b>\n"
+        f"📈 Средний КФ: <b>{round(avg_odds, 2) if total_bets else 0}</b>\n"
+        f"🧠 Среднее мат. ожидание: <b>{round(avg_ev, 2) if total_bets else 0}</b>\n\n"
+        f"✅ Выигрыш: <b>{wins}</b>\n"
+        f"❌ Проигрыш: <b>{loses}</b>\n"
+        f"🟡 Половина выигрыша: <b>{half_wins}</b>\n"
+        f"🟠 Половина проигрыша: <b>{half_loses}</b>\n"
+        f"↩️ Возврат: <b>{refunds}</b>\n"
+        f"🕒 В ожидании: <b>{pendings}</b>\n\n"
+        f"📊 Прибыль по отмеченным: <b>{round(total_profit, 2)}</b>\n"
+        f"📐 ROI: <b>{roi}%</b>",
+        reply_markup=stats_menu_kb(),
     )
 
 
@@ -1277,6 +1601,86 @@ async def export_csv_handler(message: Message):
     await message.answer_document(FSInputFile(path), caption="📤 Экспорт CSV готов.", reply_markup=stats_menu_kb())
 
 
+@dp.message(F.text == "📦 Export XLSX")
+async def export_xlsx_handler(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+
+    path = export_bets_to_xlsx(message.from_user.id)
+    if not path:
+        await message.answer("📭 Пока нет данных для экспорта.", reply_markup=stats_menu_kb())
+        return
+
+    await message.answer_document(FSInputFile(path), caption="📦 Экспорт XLSX готов.", reply_markup=stats_menu_kb())
+
+
+@dp.message(F.text == "📌 Ближайшие матчи")
+async def upcoming_matches_handler(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+
+    db = connect()
+    rows = db.execute(
+        """
+        SELECT match_name, market, stake, odds, bookmaker, match_start_at
+        FROM bets
+        WHERE user_id = ? AND result_status = 'pending' AND match_start_at IS NOT NULL
+        ORDER BY match_start_at ASC
+        LIMIT 10
+    """,
+        (message.from_user.id,),
+    ).fetchall()
+    db.close()
+
+    future_rows = []
+    for row in rows:
+        match_name, market, stake, odds, bookmaker, match_start_at = row
+        try:
+            dt = datetime.fromisoformat(match_start_at)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=TIMEZONE)
+        except Exception:
+            continue
+        if dt >= now_dt():
+            future_rows.append((match_name, market, stake, odds, bookmaker, dt))
+
+    if not future_rows:
+        await message.answer("📭 Ближайших ожидающих матчей нет.", reply_markup=stats_menu_kb())
+        return
+
+    lines = ["📌 <b>Ближайшие матчи</b>\n"]
+    for idx, row in enumerate(future_rows[:10], start=1):
+        match_name, market, stake, odds, bookmaker, dt = row
+        lines.append(
+            f"{idx}. <b>{match_name}</b>\n"
+            f"📌 {market}\n"
+            f"💸 {stake} | 📈 {odds} | 🏦 {bookmaker}\n"
+            f"🕒 {dt.astimezone(TIMEZONE).strftime('%d.%m.%Y %H:%M')} МСК\n"
+        )
+
+    await message.answer("\n".join(lines), reply_markup=stats_menu_kb())
+
+
+# =========================
+# SERVICE MENU
+# =========================
+@dp.message(F.text == "📋 Логи")
+async def logs_handler(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+
+    rows = get_recent_logs(10)
+    if not rows:
+        await message.answer("📭 Логов пока нет.", reply_markup=service_menu_kb())
+        return
+
+    lines = ["📋 <b>Последние логи</b>\n"]
+    for level, text, created_at in rows:
+        lines.append(f"<b>{level}</b> | {created_at}\n{text}\n")
+
+    await message.answer("\n".join(lines), reply_markup=service_menu_kb())
+
+
 # =========================
 # BET INPUT FLOW
 # =========================
@@ -1288,9 +1692,8 @@ async def retry_amount_handler(message: Message, state: FSMContext):
         return
 
     await message.answer(
-        "🔁 <b>Повтори ввод суммы</b>\n\n"
-        "Пример: <code>1500</code>",
-        reply_markup=amount_retry_kb()
+        "🔁 <b>Повтори ввод суммы</b>\n\nПример: <code>1500</code>",
+        reply_markup=amount_retry_kb(),
     )
 
 
@@ -1306,8 +1709,11 @@ async def universal_text_handler(message: Message, state: FSMContext):
         ShiftState.waiting_budget.state,
         ShiftState.waiting_end_shift_confirm.state,
         ShiftState.waiting_delete_last_confirm.state,
+        ShiftState.waiting_delete_bet_number.state,
         ShiftState.waiting_result_bet_number.state,
         ShiftState.waiting_result_status.state,
+        ShiftState.waiting_edit_stake_bet_number.state,
+        ShiftState.waiting_edit_stake_value.state,
     }:
         return
 
@@ -1329,9 +1735,8 @@ async def universal_text_handler(message: Message, state: FSMContext):
                 raise ValueError
         except Exception:
             await message.answer(
-                "⚠️ Сумма не распознана.\n"
-                "Введи число, например: <code>1500</code>",
-                reply_markup=amount_retry_kb()
+                "⚠️ Сумма не распознана.\nВведи число, например: <code>1500</code>",
+                reply_markup=amount_retry_kb(),
             )
             return
 
@@ -1348,18 +1753,12 @@ async def universal_text_handler(message: Message, state: FSMContext):
         except Exception as e:
             if "UNIQUE constraint failed" in str(e):
                 await state.clear()
-                await message.answer(
-                    "⚠️ Эта ставка уже была добавлена ранее.",
-                    reply_markup=bets_menu_kb()
-                )
+                await message.answer("⚠️ Эта ставка уже была добавлена ранее.", reply_markup=bets_menu_kb())
                 return
 
             log_error(f"Bet insert failed: {e}")
             await state.clear()
-            await message.answer(
-                f"❌ Ошибка записи ставки:\n<code>{e}</code>",
-                reply_markup=bets_menu_kb()
-            )
+            await message.answer(f"❌ Ошибка записи ставки:\n<code>{e}</code>", reply_markup=bets_menu_kb())
             return
 
         new_spent = round(spent + amount, 2)
@@ -1377,7 +1776,7 @@ async def universal_text_handler(message: Message, state: FSMContext):
             f"📊 Поставлено: <b>{new_spent}</b> / <b>{budget}</b>\n"
             f"🎯 Ставок в смене: <b>{bets_count}</b>\n"
             f"🟢 Остаток: <b>{remain}</b>{warn}",
-            reply_markup=bets_menu_kb()
+            reply_markup=bets_menu_kb(),
         )
         return
 
@@ -1395,7 +1794,7 @@ async def universal_text_handler(message: Message, state: FSMContext):
             "⚠️ <b>Формат ставки не распознан</b>\n\n"
             "Я не смог корректно разобрать сообщение.\n"
             "Перешли ставку ещё раз в исходном формате.",
-            reply_markup=bets_menu_kb()
+            reply_markup=bets_menu_kb(),
         )
         log_warning("Bet parse failed")
         return
@@ -1416,7 +1815,7 @@ async def universal_text_handler(message: Message, state: FSMContext):
         f"🏦 БК: <b>{parsed['bookmaker']}</b>\n"
         f"🕒 Старт: <b>{match_start} МСК</b>\n\n"
         f"💬 Теперь напиши сумму ставки.",
-        reply_markup=amount_retry_kb()
+        reply_markup=amount_retry_kb(),
     )
 
 
@@ -1438,7 +1837,7 @@ async def reminder_job():
                 f"📈 КФ: <b>{item['odds']}</b>\n"
                 f"🏦 БК: <b>{item['bookmaker']}</b>\n"
                 f"🕒 Старт: <b>{dt_text} МСК</b>",
-                reply_markup=bets_menu_kb()
+                reply_markup=bets_menu_kb(),
             )
             mark_reminder_sent(item["id"])
             log_info(f"Reminder sent | bet_id={item['id']}")
